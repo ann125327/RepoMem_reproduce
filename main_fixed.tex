@@ -1,0 +1,305 @@
+\documentclass[11pt]{article}
+\usepackage[UTF8]{ctex}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{multirow}
+
+% 设置页面边距
+\usepackage{geometry}
+\geometry{a4paper,left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+
+% 中文格式设置
+\ctexset{
+    section = {
+        name = {第,节},
+        format = \Large\bfseries\centering,
+        aftername = {\quad},
+        beforeskip = 1.0ex plus 0.2ex minus .2ex,
+        afterskip = 1.0ex plus .2ex
+    },
+    subsection = {
+        name = {,},
+        format = \large\bfseries,
+        aftername = {\quad},
+        beforeskip = 1.0ex plus 0.2ex minus .2ex,
+        afterskip = 1.0ex plus .2ex
+    }
+}
+
+\begin{document}
+
+\title{Improving Code Localization with Repository Memory: 复现实验报告}
+\author{复现 Agent}
+\date{\today}
+
+\maketitle
+
+\tableofcontents
+
+\newpage
+
+\section{Experimental Setup}
+\label{sec:experimental_setup}
+
+本节介绍本文对 \textit{Improving Code Localization with Repository Memory}
+中方法的复现实验设定。该工作面向软件缺陷修复中的代码定位任务
+（code localization），即给定一个 issue 描述和对应仓库版本，模型需要定位出
+后续补丁中实际被修改的源代码文件。本文以 LocAgent 作为基础 baseline，
+并进一步复现 Repository Memory（RepoMem）机制，分析其在代码定位任务中的有效性与局限性。
+
+\subsection{Task Definition}
+\label{subsec:task_definition}
+
+给定一个代码仓库 $\mathcal{R}$、一个 issue 描述 $q$ 以及对应的
+base commit $c_b$，代码定位任务要求模型输出一个候选文件列表
+$\hat{F} = \{f_1, f_2, \ldots, f_k\}$。真实答案为该 issue 的补丁中被修改的文件集合
+$F^\ast$。若真实修改文件集合 $F^\ast$ 被模型输出的 top-$k$ 文件完全覆盖，
+则认为该样本在 Acc@$k$ 上定位成功：
+
+\begin{equation}
+    \text{Acc@}k =
+    \mathbb{I}(F^\ast \subseteq \hat{F}_{1:k}),
+\end{equation}
+
+其中 $\mathbb{I}(\cdot)$ 为指示函数。本文主要报告 Acc@1、Acc@3 和 Acc@5。
+
+\subsection{Dataset}
+\label{subsec:dataset}
+
+本文计划使用 SWE-bench Verified 作为主要复现实验数据集。SWE-bench Verified
+由真实 GitHub issue 及其对应的 pull request 补丁构成，能够较好地评估模型在真实软件工程场景下的代码定位能力。
+
+考虑到完整数据集复现成本较高，本文采用分阶段复现实验设置：
+
+\begin{itemize}
+    \item \textbf{Small setting:} 从 SWE-bench Verified 中选择 30 个样本，用于验证代码流程、评估脚本和 memory 构建流程是否正确。
+    \item \textbf{Medium setting:} 在流程稳定后扩展到 50--100 个样本，用于获得更可靠的对比结果。
+    \item \textbf{Full setting:} 若计算资源和 API 成本允许，进一步扩展到 SWE-bench Verified 完整测试集。
+\end{itemize}
+
+在初始复现实验中，本文优先选择样本数量较多、社区维护活跃的仓库，例如
+\texttt{django}、\texttt{scikit-learn} 或 \texttt{sympy}，以便构建较充分的历史 commit memory。
+
+\subsection{Baselines}
+\label{subsec:baselines}
+
+本文计划比较以下方法：
+
+\begin{itemize}
+    \item \textbf{LocAgent:}
+    原始图引导代码定位 agent。该方法基于代码依赖图进行实体搜索和跳转，
+    通过工具调用逐步定位可能需要修改的文件。LocAgent 不显式利用仓库历史信息，
+    因此每个 issue 的定位过程基本从当前源码和 issue 描述开始。
+
+    \item \textbf{RepoMem-Episodic:}
+    仅使用 episodic memory 的 RepoMem 变体。该方法利用历史 commit message、
+    修改文件、commit diff summary 以及可解析的 issue link，为 agent 提供历史修复经验。
+
+    \item \textbf{RepoMem-Semantic:}
+    仅使用 semantic memory 的 RepoMem 变体。该方法对仓库中历史上最活跃的文件生成自然语言摘要，
+    帮助 agent 快速理解高频修改文件的职责和模块关系。
+
+    \item \textbf{RepoMem-Full:}
+    同时使用 episodic memory 和 semantic memory 的完整 RepoMem 设置。
+
+    \item \textbf{Our Method:}
+    在 RepoMem 基础上加入进一步改进。本文计划根据复现过程中的失败案例设计改进方法，
+    例如动态 memory gating、time-aware commit retrieval 或 co-change graph memory。
+\end{itemize}
+
+\subsection{Repository Memory Construction}
+\label{subsec:memory_construction}
+
+对于每个测试样本，本文以其 base commit $c_b$ 作为当前仓库状态，只使用
+$c_b$ 之前的历史信息构建 repository memory，避免使用未来信息造成数据泄漏。
+
+\paragraph{Episodic Memory.}
+对每个样本，本文计划收集 base commit 之前最多 $N=7000$ 条历史 commits。
+每条 commit memory 包含以下字段：
+
+\begin{itemize}
+    \item commit hash；
+    \item commit message；
+    \item commit timestamp；
+    \item changed files；
+    \item diff 或 diff summary；
+    \item commit message 中解析到的 issue id，如 \texttt{Fixes \#123} 或 \texttt{Closes \#123}。
+\end{itemize}
+
+本文使用 BM25 对 commit memory 建立检索索引，并提供以下两个工具：
+
+\begin{itemize}
+    \item \texttt{SearchCommit(query\_list, top\_k)}：根据 issue 描述或 agent 生成的查询检索相关历史 commits。
+    \item \texttt{ExamineCommit(sha\_list, display\_issue)}：查看指定 commits 的详细信息，包括修改文件和 diff summary。
+\end{itemize}
+
+\paragraph{Semantic Memory.}
+Semantic memory 用于总结仓库中高活跃文件的功能。本文首先统计历史 commits 中各文件被修改的频率，
+选择 top-$M$ 个活跃文件。在 small setting 中，出于成本控制，本文计划设置 $M=50$；
+在 medium/full setting 中，若资源允许，将扩展到 $M=200$。
+
+对于每个活跃文件，使用大语言模型生成文件级摘要，摘要内容包括：
+
+\begin{itemize}
+    \item 文件的主要职责；
+    \item 关键类、函数或数据结构；
+    \item 与其他模块的关系；
+    \item 该文件可能涉及的 bug 类型。
+\end{itemize}
+
+随后对 semantic summary 建立 BM25 索引，并提供以下两个工具：
+
+\begin{itemize}
+    \item \texttt{SearchSummary(query, top\_k)}：检索与当前 issue 相关的文件摘要。
+    \item \texttt{ViewSummary(file)}：查看指定文件的完整 semantic summary。
+\end{itemize}
+
+\subsection{Implementation Details}
+\label{subsec:implementation_details}
+
+本文复现实验基于 LocAgent 官方实现进行扩展。首先复现原始 LocAgent 的代码定位流程，
+包括仓库下载、dependency graph 构建、agent 推理和 file-level 评估。随后在不改变 LocAgent
+原始代码工具的基础上，额外接入 RepoMem 的四个 memory 工具。
+
+所有方法使用相同的数据划分、相同的 issue 输入和相同的评价脚本。为保证公平性，
+不同方法使用相同的大语言模型作为 agent 后端。若实验中因 API 可用性或成本限制无法使用论文中的完全相同模型，
+本文将在报告中明确说明模型版本差异。
+
+实验过程中记录以下信息：
+
+\begin{itemize}
+    \item 每个样本的 predicted files；
+    \item ground-truth modified files；
+    \item Acc@1、Acc@3、Acc@5；
+    \item agent 工具调用轨迹；
+    \item token 使用量；
+    \item API 成本；
+    \item 运行时间；
+    \item 失败样本的错误类型。
+\end{itemize}
+
+\subsection{Evaluation Metrics}
+\label{subsec:evaluation_metrics}
+
+本文主要使用 file-level localization accuracy 作为评价指标，包括 Acc@1、Acc@3 和 Acc@5。
+其中 Acc@1 衡量模型最优先预测文件的准确性，Acc@3 和 Acc@5 衡量模型能否在较短候选列表中覆盖真实修改文件。
+
+此外，为分析方法的实际使用成本，本文还计划统计：
+
+\begin{itemize}
+    \item \textbf{Average tool calls:} 每个样本平均工具调用次数；
+    \item \textbf{Average tokens:} 每个样本平均输入和输出 token 数；
+    \item \textbf{Average cost:} 每个样本平均 API 成本；
+    \item \textbf{Average runtime:} 每个样本平均运行时间。
+\end{itemize}
+
+这些指标有助于分析 repository memory 是否不仅提升了定位准确率，同时也改善了 agent 的搜索效率。
+
+\section{Experimental Plan}
+\label{sec:experimental_plan}
+
+本文复现实验分为四个阶段进行。
+
+\subsection{Stage 1: Reproducing LocAgent}
+\label{subsec:stage1}
+
+第一阶段目标是跑通 LocAgent 原始方法，建立可靠的 baseline。具体步骤如下：
+
+\begin{enumerate}
+    \item 克隆 LocAgent 官方代码库并配置运行环境；
+    \item 下载 SWE-bench Verified 数据集；
+    \item 根据每个样本的 base commit 构建对应仓库状态；
+    \item 构建 dependency graph；
+    \item 在 small setting 上运行 LocAgent；
+    \item 使用统一评估脚本计算 Acc@1、Acc@3 和 Acc@5。
+\end{enumerate}
+
+该阶段的预期产出包括 LocAgent 的小规模实验结果、运行日志和初步失败样本列表。
+这一阶段的主要作用是确认实验流程是否正确，并为后续 RepoMem 复现提供对照结果。
+
+\subsection{Stage 2: Reproducing Repository Memory}
+\label{subsec:stage2}
+
+第二阶段目标是构建 RepoMem 所需的 episodic memory 和 semantic memory。
+具体步骤如下：
+
+\begin{enumerate}
+    \item 对每个样本收集 base commit 之前的历史 commits；
+    \item 从 commit message 中解析 issue link；
+    \item 提取 commit 修改文件和 diff summary；
+    \item 使用 BM25 建立 episodic memory 检索索引；
+    \item 根据历史修改频率选择 top active files；
+    \item 使用大语言模型生成文件级 semantic summaries；
+    \item 使用 BM25 建立 semantic memory 检索索引。
+\end{enumerate}
+
+该阶段的关键检查点是：对于任意一个 issue，agent 能否通过
+\texttt{SearchCommit} 和 \texttt{SearchSummary} 检索到合理的历史信息。
+
+\subsection{Stage 3: Integrating RepoMem with LocAgent}
+\label{subsec:stage3}
+
+第三阶段目标是将 repository memory 工具接入 LocAgent。
+在该阶段中，本文保留 LocAgent 原有的代码搜索和图遍历工具，同时新增四个 memory 工具：
+
+\begin{itemize}
+    \item \texttt{SearchCommit}
+    \item \texttt{ExamineCommit}
+    \item \texttt{SearchSummary}
+    \item \texttt{ViewSummary}
+\end{itemize}
+
+接入后，本文分别运行三种 RepoMem 设置：
+RepoMem-Episodic、RepoMem-Semantic 和 RepoMem-Full。
+通过与原始 LocAgent 对比，可以分析两类 memory 对代码定位性能的独立贡献。
+
+\subsection{Stage 4: Analysis and Improvement}
+\label{subsec:stage4}
+
+第四阶段目标是进行结果分析，并基于失败案例提出本文的改进方法。
+本文计划从以下角度分析 baseline 的失败原因：
+
+\begin{itemize}
+    \item LocAgent 是否因为缺少历史上下文而定位失败；
+    \item episodic memory 是否能够召回与当前 issue 相关的历史修复；
+    \item semantic memory 是否能够帮助 agent 理解高活跃文件的职责；
+    \item RepoMem 是否会因为检索噪声被误导；
+    \item memory 工具调用是否显著增加 token 和成本；
+    \item agent 是否找到了相关文件但排序错误。
+\end{itemize}
+
+在失败分析基础上，本文计划提出一种改进方法。初步设想为
+\textbf{GatedRepoMem}：在 agent 使用 repository memory 之前，先判断当前 issue
+是否真的需要历史信息。如果 issue 涉及 regression、历史行为、兼容性或跨版本变化，
+则增强 memory 检索；如果 issue 是局部 API、语法或简单逻辑错误，则降低 memory 使用频率，
+避免无关历史 commits 干扰定位过程。
+
+GatedRepoMem 的核心假设是：repository memory 并非对所有样本都有帮助。
+在简单或高度局部的问题中，过多历史信息可能引入噪声；而在涉及历史行为和跨文件依赖的问题中，
+memory 能够提供当前源码之外的关键线索。因此，通过动态决定 memory 的使用强度，
+有望在保持 RepoMem 优势的同时降低噪声和成本。
+
+\subsection{Expected Results}
+\label{subsec:expected_results}
+
+本文预期 LocAgent 在 small setting 上能够取得较强的 file-level localization 结果，
+但在涉及历史行为、隐式模块关系和跨文件修改的样本中容易失败。
+RepoMem-Episodic 预计能够改善历史修复模式明显的样本，
+RepoMem-Semantic 预计能够帮助 agent 更快理解高活跃文件的职责。
+RepoMem-Full 预期整体表现优于单独使用一种 memory 的变体。
+
+对于本文提出的 GatedRepoMem，预期其主要优势不是在所有样本上显著提高 Acc@k，
+而是在以下方面带来改进：
+
+\begin{itemize}
+    \item 减少无关 memory 检索造成的错误定位；
+    \item 降低不必要的 token 和工具调用成本；
+    \item 在 memory 有用的样本上保持 RepoMem 的定位优势；
+    \item 提高 agent 工具使用轨迹的可解释性。
+\end{itemize}
+
+最终实验结果将通过主结果表、消融实验表和 case study 进行呈现。
+
+\end{document}
