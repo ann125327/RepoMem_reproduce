@@ -14,8 +14,11 @@ from tqdm import tqdm
 # 添加 LocAgent 到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'LocAgent'))
 
+# 应用本地数据补丁（避免从 HuggingFace 下载）
+import scripts.local_dataset_patch  # noqa: F401
+
 from util.benchmark.git_repo_manager import setup_github_repo
-from repo_ops.graph_ops.graph_builder import build_graph
+from dependency_graph.build_graph import build_graph
 
 def prebuild_graph_indexes(
     dataset_name: str = "princeton-nlp/SWE-bench_Verified",
