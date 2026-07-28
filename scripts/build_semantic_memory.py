@@ -97,7 +97,7 @@ def main():
     # Test instances
     test_instances = [
         {
-            'instance_id': 'test_quick',  # Use existing test file
+            'instance_id': 'astropy__astropy-12907',  # Use full episodic memory
             'repo': 'astropy/astropy',
             'base_commit': 'd16bfe05a744909de4b27f5875fe0d4ed41ce607',
         }
