@@ -70,3 +70,9 @@ logs/
 # Test outputs
 test_output/
 temp/
+
+# Memory data files (keep directory structure)
+memory/episodic/*/*.jsonl
+memory/indexes/*/*/
+memory/indexes/*/*/*/*.pkl
+memory/indexes/*/*/*/index_metadata.json
