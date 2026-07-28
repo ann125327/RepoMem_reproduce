@@ -1,11 +1,16 @@
 """
-RepoMem Episodic Memory Tools
+RepoMem Episodic and Semantic Memory Tools
 
 This module provides tools for agents to interact with
-the episodic memory (commit history):
+the episodic memory (commit history) and semantic memory (file summaries):
 
+Episodic Memory Tools:
 - SearchCommit: Search for relevant commits
 - ExamineCommit: Get detailed information about specific commits
+
+Semantic Memory Tools:
+- SearchFile: Search for relevant files by semantic summary
+- ExamineFile: Get detailed information about specific files
 """
 
 import json
@@ -14,6 +19,12 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
 from .index_commit_memory import CommitMemorySearcher
+from .index_semantic_memory import SemanticMemorySearcher
+
+
+# ============================================================================
+# Data Classes
+# ============================================================================
 
 
 @dataclass
@@ -38,6 +49,23 @@ class CommitDetail:
     linked_issue_id: Optional[str] = None
     linked_issue_text: Optional[str] = None
     full_diff: Optional[str] = None
+
+
+@dataclass
+class FileSearchResult:
+    """Result from SearchFile tool."""
+    file_path: str
+    summary: str
+    score: float
+    change_frequency: int
+    file_type: str
+    line_count: int
+    key_entities: List[str]
+
+
+# ============================================================================
+# Episodic Memory Tools (Commit History)
+# ============================================================================
 
 
 class SearchCommit:
@@ -325,12 +353,199 @@ class ExamineCommit:
         return '\n'.join(lines)
 
 
+# ============================================================================
+# Semantic Memory Tools (File Summaries)
+# ============================================================================
+
+
+class SearchFile:
+    """
+    Tool to search for relevant files using semantic summaries.
+
+    This tool searches file summaries using BM25 ranking
+    to find the most relevant files based on semantic understanding.
+    """
+
+    def __init__(self, index_dir: Path):
+        """
+        Initialize SearchFile tool.
+
+        Args:
+            index_dir: Directory containing the semantic BM25 index
+        """
+        self.index_dir = index_dir
+        self.searcher = None
+
+    def _ensure_searcher(self):
+        """Lazy load the searcher."""
+        if not self.searcher:
+            self.searcher = SemanticMemorySearcher(self.index_dir)
+
+    def search(self, query: str, top_k: int = 10) -> List[FileSearchResult]:
+        """
+        Search for files matching the query.
+
+        Args:
+            query: Search query
+            top_k: Number of top results to return
+
+        Returns:
+            List of FileSearchResult objects
+        """
+        self._ensure_searcher()
+
+        raw_results = self.searcher.search(query, top_k=top_k)
+
+        results = []
+        for r in raw_results:
+            results.append(FileSearchResult(
+                file_path=r['file_path'],
+                summary=r['summary'],
+                score=r['score'],
+                change_frequency=r['change_frequency'],
+                file_type=r['file_type'],
+                line_count=r['line_count'],
+                key_entities=r['key_entities']
+            ))
+
+        return results
+
+    def format_results(self, results: List[FileSearchResult]) -> str:
+        """
+        Format search results for display.
+
+        Args:
+            results: List of search results
+
+        Returns:
+            Formatted string
+        """
+        lines = []
+        lines.append(f"Found {len(results)} relevant files:\n")
+
+        for i, result in enumerate(results, 1):
+            lines.append(f"{i}. {result.file_path}")
+            lines.append(f"   Score: {result.score:.2f} | Changes: {result.change_frequency} | Type: {result.file_type}")
+            lines.append(f"   Summary: {result.summary[:150]}...")
+
+            if result.key_entities:
+                entities_str = ', '.join(result.key_entities[:5])
+                if len(result.key_entities) > 5:
+                    entities_str += f" ... ({len(result.key_entities)} entities)"
+                lines.append(f"   Entities: {entities_str}")
+
+            lines.append("")
+
+        return '\n'.join(lines)
+
+
+class ExamineFile:
+    """
+    Tool to examine specific files in detail.
+
+    This tool retrieves full file information including:
+    - Semantic summary
+    - File content at base_commit
+    - Change history
+    - Key entities
+    """
+
+    def __init__(self, semantic_memory_file: Path, index_dir: Path):
+        """
+        Initialize ExamineFile tool.
+
+        Args:
+            semantic_memory_file: JSONL file containing file summaries
+            index_dir: Directory containing the semantic index
+        """
+        self.semantic_memory_file = semantic_memory_file
+        self.index_dir = index_dir
+        self._memory_cache = None
+
+    def _load_memory(self) -> Dict[str, Any]:
+        """Load semantic memory into cache."""
+        if not self._memory_cache:
+            self._memory_cache = {}
+            with open(self.semantic_memory_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    summary = json.loads(line.strip())
+                    self._memory_cache[summary['file_path']] = summary
+        return self._memory_cache
+
+    def examine(self, file_paths: List[str]) -> List[Dict[str, Any]]:
+        """
+        Examine specific files in detail.
+
+        Args:
+            file_paths: List of file paths to examine
+
+        Returns:
+            List of file details
+        """
+        memory = self._load_memory()
+        details = []
+
+        for file_path in file_paths:
+            if file_path not in memory:
+                print(f"Warning: File not found: {file_path}")
+                continue
+
+            summary = memory[file_path]
+            details.append({
+                'file_path': file_path,
+                'summary': summary['summary'],
+                'change_frequency': summary['change_frequency'],
+                'last_modified': summary.get('last_modified', 'N/A'),
+                'file_type': summary['file_type'],
+                'line_count': summary['line_count'],
+                'key_entities': summary.get('key_entities', [])
+            })
+
+        return details
+
+    def format_details(self, details: List[Dict[str, Any]]) -> str:
+        """
+        Format file details for display.
+
+        Args:
+            details: List of file details
+
+        Returns:
+            Formatted string
+        """
+        lines = []
+
+        for i, detail in enumerate(details, 1):
+            lines.append(f"{'='*70}")
+            lines.append(f"File {i}: {detail['file_path']}")
+            lines.append(f"{'='*70}")
+            lines.append(f"\nType: {detail['file_type']} | Lines: {detail['line_count']}")
+            lines.append(f"Changes: {detail['change_frequency']} | Last Modified: {detail['last_modified']}\n")
+            lines.append("Semantic Summary:")
+            lines.append("-" * 70)
+            lines.append(detail['summary'])
+            lines.append("")
+
+            if detail['key_entities']:
+                lines.append("Key Entities:")
+                lines.append("-" * 70)
+                lines.append(', '.join(detail['key_entities']))
+                lines.append("")
+
+        return '\n'.join(lines)
+
+
+# ============================================================================
+# Unified Interface
+# ============================================================================
+
+
 class RepoMemTools:
     """
-    Unified interface for RepoMem episodic memory tools.
+    Unified interface for RepoMem episodic and semantic memory tools.
 
     This class provides a high-level interface that combines
-    SearchCommit and ExamineCommit tools for easy use.
+    SearchCommit, ExamineCommit, SearchFile, and ExamineFile tools.
     """
 
     def __init__(self, instance_id: str, repo_name: str, memory_base: Path):
@@ -347,30 +562,68 @@ class RepoMemTools:
 
         # Setup paths
         repo_safe_name = repo_name.replace('/', '_')
-        self.memory_file = memory_base / 'episodic' / repo_safe_name / f'{instance_id}.jsonl'
-        self.index_dir = memory_base / 'indexes' / repo_safe_name / instance_id / 'commit_bm25'
+
+        # Episodic memory paths
+        self.episodic_memory_file = memory_base / 'episodic' / repo_safe_name / f'{instance_id}.jsonl'
+        self.episodic_index_dir = memory_base / 'indexes' / repo_safe_name / instance_id / 'commit_bm25'
+
+        # Semantic memory paths
+        self.semantic_memory_file = memory_base / 'semantic' / repo_safe_name / f'{instance_id}_semantic.jsonl'
+        self.semantic_index_dir = memory_base / 'indexes' / repo_safe_name / instance_id / 'semantic_bm25'
 
         # Initialize tools
-        self.search_tool = None
-        self.examine_tool = None
+        self.commit_search_tool = None
+        self.commit_examine_tool = None
+        self.file_search_tool = None
+        self.file_examine_tool = None
 
-        # Verify paths exist
-        if not self.memory_file.exists():
-            raise FileNotFoundError(f"Memory file not found: {self.memory_file}")
-        if not self.index_dir.exists():
-            raise FileNotFoundError(f"Index directory not found: {self.index_dir}")
+        # Verify episodic paths exist (required)
+        if not self.episodic_memory_file.exists():
+            raise FileNotFoundError(f"Episodic memory file not found: {self.episodic_memory_file}")
+        if not self.episodic_index_dir.exists():
+            raise FileNotFoundError(f"Episodic index directory not found: {self.episodic_index_dir}")
 
-    def _get_search_tool(self) -> SearchCommit:
-        """Get or create search tool."""
-        if not self.search_tool:
-            self.search_tool = SearchCommit(self.index_dir)
-        return self.search_tool
+        # Check if semantic memory exists (optional)
+        self.has_semantic = (
+            self.semantic_memory_file.exists() and
+            self.semantic_index_dir.exists()
+        )
 
-    def _get_examine_tool(self) -> ExamineCommit:
-        """Get or create examine tool."""
-        if not self.examine_tool:
-            self.examine_tool = ExamineCommit(self.memory_file, self.index_dir)
-        return self.examine_tool
+    # Episodic Memory Methods (Commit History)
+
+    def _get_commit_search_tool(self) -> SearchCommit:
+        """Get or create commit search tool."""
+        if not self.commit_search_tool:
+            self.commit_search_tool = SearchCommit(self.episodic_index_dir)
+        return self.commit_search_tool
+
+    def _get_commit_examine_tool(self) -> ExamineCommit:
+        """Get or create commit examine tool."""
+        if not self.commit_examine_tool:
+            self.commit_examine_tool = ExamineCommit(
+                self.episodic_memory_file,
+                self.episodic_index_dir
+            )
+        return self.commit_examine_tool
+
+    def _get_file_search_tool(self) -> Optional[SearchFile]:
+        """Get or create file search tool."""
+        if not self.has_semantic:
+            return None
+        if not self.file_search_tool:
+            self.file_search_tool = SearchFile(self.semantic_index_dir)
+        return self.file_search_tool
+
+    def _get_file_examine_tool(self) -> Optional[ExamineFile]:
+        """Get or create file examine tool."""
+        if not self.has_semantic:
+            return None
+        if not self.file_examine_tool:
+            self.file_examine_tool = ExamineFile(
+                self.semantic_memory_file,
+                self.semantic_index_dir
+            )
+        return self.file_examine_tool
 
     def search_commits(self, query_list: List[str], top_k: int = 10) -> str:
         """
@@ -383,7 +636,7 @@ class RepoMemTools:
         Returns:
             Formatted search results
         """
-        tool = self._get_search_tool()
+        tool = self._get_commit_search_tool()
         results = tool.search(query_list, top_k=top_k)
         return tool.format_results(results)
 
@@ -404,12 +657,53 @@ class RepoMemTools:
         Returns:
             Formatted commit details
         """
-        tool = self._get_examine_tool()
+        tool = self._get_commit_examine_tool()
         details = tool.examine(sha_list, display_issue, include_diff)
         return tool.format_details(details)
 
+    # Semantic Memory Methods (File Summaries)
 
-# Tool function signatures for agent integration
+    def search_files(self, query: str, top_k: int = 10) -> str:
+        """
+        Search for relevant files using semantic summaries.
+
+        Args:
+            query: Search query
+            top_k: Number of results
+
+        Returns:
+            Formatted search results
+        """
+        tool = self._get_file_search_tool()
+        if not tool:
+            return "Semantic memory not available. Please build semantic memory first."
+
+        results = tool.search(query, top_k=top_k)
+        return tool.format_results(results)
+
+    def examine_files(self, file_paths: List[str]) -> str:
+        """
+        Examine specific files in detail.
+
+        Args:
+            file_paths: List of file paths
+
+        Returns:
+            Formatted file details
+        """
+        tool = self._get_file_examine_tool()
+        if not tool:
+            return "Semantic memory not available. Please build semantic memory first."
+
+        details = tool.examine(file_paths)
+        return tool.format_details(details)
+
+
+# ============================================================================
+# Standalone Tool Functions
+# ============================================================================
+
+
 def search_commit_tool(query_list: List[str], top_k: int = 10) -> str:
     """
     Agent tool: Search for relevant commits in episodic memory.
@@ -449,6 +743,11 @@ def examine_commit_tool(sha_list: List[str], display_issue: bool = True) -> str:
     """
     # This will be called with proper context from RepoMemTools
     raise NotImplementedError("Tool must be called with RepoMem context")
+
+
+# ============================================================================
+# Main
+# ============================================================================
 
 
 if __name__ == '__main__':
