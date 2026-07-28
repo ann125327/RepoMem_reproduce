@@ -97,7 +97,7 @@ def main():
     # Test instances
     test_instances = [
         {
-            'instance_id': 'astropy__astropy-12907',
+            'instance_id': 'test_quick',  # Use existing test file
             'repo': 'astropy/astropy',
             'base_commit': 'd16bfe05a744909de4b27f5875fe0d4ed41ce607',
         }
@@ -116,11 +116,17 @@ def main():
         repo_safe_name = repo_name.replace('/', '_')
         repo_path = None
 
-        for playground_dir in repo_base.iterdir():
-            potential_repo = playground_dir / repo_safe_name
-            if potential_repo.exists() and (potential_repo / '.git').exists():
-                repo_path = potential_repo
-                break
+        # Try specific known working directory first
+        specific_dir = repo_base / '519e12d6-30ab-4101-a4e0-1ccf054802cd' / repo_safe_name
+        if specific_dir.exists() and (specific_dir / '.git').exists():
+            repo_path = specific_dir
+        else:
+            # Find any existing repo directory in playground
+            for playground_dir in repo_base.iterdir():
+                potential_repo = playground_dir / repo_safe_name
+                if potential_repo.exists() and (potential_repo / '.git').exists():
+                    repo_path = potential_repo
+                    break
 
         if not repo_path:
             print(f"[ERROR] Repository not found: {repo_name}")
